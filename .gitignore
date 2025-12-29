@@ -1,0 +1,93 @@
+# Globals
+result/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+wheelhouse/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+install.log
+
+# Virtualenvs
+.env
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Pyenv
+.python-version
+
+# pyenv-virtualenv
+.python-version
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Test / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# MyPy / caches
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# Sphinx build
+docs/_build/
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Sensitive files / env
+.env.local
+.env.*.local
+secrets.env
+
+# Editor swap / backup files
+*~
+*.swp
+*.swo
+
+# Python profiler / trace
+.prof
+.prof.*.dat
+
+# IDE / misc
+.idea/
+.vagrant/
+*.iml
