@@ -21,7 +21,7 @@ if gpus:
 # -------------------------------
 # 参数（可按需微调 batch_size 防止显存爆炸）
 # -------------------------------
-BATCH_SIZE = 4         # 如果仍 OOM，请降低到 2 或 1
+BATCH_SIZE = 4
 EPOCHS = 50
 NUM_CLASSES = 4
 BACKBONE = "vgg16"
