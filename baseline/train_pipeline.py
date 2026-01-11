@@ -1,6 +1,6 @@
 from data_loader import load_data, check_npy_files_exist
-from train_core import train_model
-from evaluate import evaluate
+from train_core import train_model, train_model_light_uent
+from evaluate import evaluate, evaluate_unetlight
 from loguru import logger
 
 # ------------- Settings -------------
@@ -20,6 +20,7 @@ else:
 logger.info("*" * 60)
 logger.info("Enter train model session!")
 
-model_path = train_model(SAVE_NPY_FOLDER, MODEL_BASE_FOLDER, EPOCHES)
+# model_path = train_model_light_uent(SAVE_NPY_FOLDER, MODEL_BASE_FOLDER, EPOCHES)
 
-evaluate("./result", SAVE_NPY_FOLDER, model_path)
+# evaluate("./result", SAVE_NPY_FOLDER, model_path)
+evaluate_unetlight("./result", SAVE_NPY_FOLDER, "result/models/lightweight_unet_30_model/lightweight_unet_30epochs.keras")
