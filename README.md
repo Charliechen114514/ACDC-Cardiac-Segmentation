@@ -11,7 +11,11 @@ conda env create -f environment.yml -n acdc_cardiac
 conda activate acdc_cardiac
 ```
 
-
+# 如何运行本项目？
+```bash
+# 启动完成本项目之后，在项目的根目录运行:
+python -m baseline.train_pipeline
+```
 
 
 

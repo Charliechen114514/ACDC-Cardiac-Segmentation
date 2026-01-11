@@ -9,7 +9,9 @@ from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D, UpSampling2D, 
     concatenate, BatchNormalization, Activation, Dropout
 )
+from baseline.base_component import *
 from loguru import logger
+
 
 # -------------------------------
 # GPU 设置
@@ -516,4 +518,71 @@ def train_model_light_uent(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SI
     logger.info(f"Final model location: {MODEL_SAVE_NAME}")
     logger.info("=" * 60)
     
+    return MODEL_SAVE_NAME
+
+
+# -------------------------------
+# 更新后的训练函数
+# -------------------------------
+def train_model_unetpp(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SIZE=4):
+    setup_gpu()
+    NUM_CLASSES = 4
+    
+    # 路径准备
+    MODEL_SAVE_DIR = os.path.join(SAVE_BASE_PATH, f"unetpp_{EPOCHS}_model")
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    MODEL_SAVE_NAME = os.path.join(MODEL_SAVE_DIR, f"modelUnetPP_{EPOCHS}epochs.keras")
+
+    # 构建自定义 U-Net++ 模型
+    logger.info("Building Custom U-Net++ (Nested Skip Connections)")
+    model = build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=NUM_CLASSES)
+
+    # 编译 (保持与 Baseline 一致的损失函数)
+    dice_loss = sm.losses.DiceLoss(class_weights=np.array([1, 1, 1, 0.5]))
+    focal_loss = sm.losses.CategoricalFocalLoss()
+    model.compile(
+        optimizer=Adam(learning_rate=1e-4),
+        loss=dice_loss + focal_loss,
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+
+    # 数据集加载 (复用之前的逻辑)
+    train_ds = make_dataset(os.path.join(save_data_folder, "x_2d_train.npy"), 
+                            os.path.join(save_data_folder, "y_2d_train.npy"), BATCH_SIZE, NUM_CLASSES)
+    val_ds = make_dataset(os.path.join(save_data_folder, "x_2d_val.npy"), 
+                          os.path.join(save_data_folder, "y_2d_val.npy"), BATCH_SIZE, NUM_CLASSES)
+
+    logger.info(f"Training U-Net++... Saving to: {MODEL_SAVE_NAME}")
+    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+    model.save(MODEL_SAVE_NAME)
+    return MODEL_SAVE_NAME
+
+# -------------------------------
+# 更新后的训练函数
+# -------------------------------
+def train_model_attention_unet(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SIZE=4):
+    setup_gpu()
+    NUM_CLASSES = 4
+    
+    MODEL_SAVE_DIR = os.path.join(SAVE_BASE_PATH, f"attention_unet_{EPOCHS}_model")
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    MODEL_SAVE_NAME = os.path.join(MODEL_SAVE_DIR, f"modelAttUnet_{EPOCHS}epochs.keras")
+
+    logger.info("Building Custom Attention U-Net...")
+    model = build_attention_unet_custom(input_shape=(256, 256, 1), num_classes=NUM_CLASSES)
+
+    model.compile(
+        optimizer=Adam(learning_rate=1e-4),
+        loss=sm.losses.DiceLoss(class_weights=np.array([1, 1, 1, 0.5])) + sm.losses.CategoricalFocalLoss(),
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+
+    train_ds = make_dataset(os.path.join(save_data_folder, "x_2d_train.npy"), 
+                            os.path.join(save_data_folder, "y_2d_train.npy"), BATCH_SIZE, NUM_CLASSES)
+    val_ds = make_dataset(os.path.join(save_data_folder, "x_2d_val.npy"), 
+                          os.path.join(save_data_folder, "y_2d_val.npy"), BATCH_SIZE, NUM_CLASSES)
+
+    logger.info(f"Starting Attention U-Net training. Saving to: {MODEL_SAVE_NAME}")
+    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+    model.save(MODEL_SAVE_NAME)
     return MODEL_SAVE_NAME

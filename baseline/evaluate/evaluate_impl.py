@@ -8,10 +8,14 @@ import gc
 from scipy.spatial.distance import directed_hausdorff
 import json
 import segmentation_models as sm
-from keras.layers import Input, Conv2D
+from keras.layers import (
+    Input, Conv2D, MaxPooling2D, UpSampling2D, 
+    concatenate, BatchNormalization, Activation, Dropout
+)
 from keras.models import Model
 from keras.optimizers import Adam
 from loguru import logger
+from baseline.base_component import *
 
 # ---------------------------
 # GPU 设置
@@ -28,6 +32,59 @@ def setup_gpu():
             logger.warning(f"Failed to set GPU memory growth: {e}")
     else:
         logger.info("No GPU found, using CPU")
+
+# ---------------------------
+# Light UNet
+# ---------------------------
+def build_lightweight_unet(input_shape=(256, 256, 1), num_classes=4, activation='softmax'):
+    """
+    构建轻量级 U-Net 模型（标准 U-Net 架构）
+    """
+    inputs = Input(shape=input_shape)
+    
+    # ============ 编码器（Encoder / 下采样路径）============
+    conv1 = conv_block(inputs, 32, dropout_rate=0.1)
+    pool1 = MaxPooling2D(pool_size=(2, 2))(conv1)
+    
+    conv2 = conv_block(pool1, 64, dropout_rate=0.1)
+    pool2 = MaxPooling2D(pool_size=(2, 2))(conv2)
+    
+    conv3 = conv_block(pool2, 128, dropout_rate=0.2)
+    pool3 = MaxPooling2D(pool_size=(2, 2))(conv3)
+    
+    conv4 = conv_block(pool3, 256, dropout_rate=0.2)
+    pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
+    
+    # ============ 瓶颈层（Bottleneck）============
+    conv5 = conv_block(pool4, 512, dropout_rate=0.3)
+    
+    # ============ 解码器（Decoder / 上采样路径）============
+    up6 = UpSampling2D(size=(2, 2))(conv5)
+    up6 = Conv2D(256, (2, 2), padding='same', kernel_initializer='he_normal')(up6)
+    merge6 = concatenate([conv4, up6], axis=3)
+    conv6 = conv_block(merge6, 256, dropout_rate=0.2)
+    
+    up7 = UpSampling2D(size=(2, 2))(conv6)
+    up7 = Conv2D(128, (2, 2), padding='same', kernel_initializer='he_normal')(up7)
+    merge7 = concatenate([conv3, up7], axis=3)
+    conv7 = conv_block(merge7, 128, dropout_rate=0.2)
+    
+    up8 = UpSampling2D(size=(2, 2))(conv7)
+    up8 = Conv2D(64, (2, 2), padding='same', kernel_initializer='he_normal')(up8)
+    merge8 = concatenate([conv2, up8], axis=3)
+    conv8 = conv_block(merge8, 64, dropout_rate=0.1)
+    
+    up9 = UpSampling2D(size=(2, 2))(conv8)
+    up9 = Conv2D(32, (2, 2), padding='same', kernel_initializer='he_normal')(up9)
+    merge9 = concatenate([conv1, up9], axis=3)
+    conv9 = conv_block(merge9, 32, dropout_rate=0.1)
+    
+    # ============ 输出层 ============
+    outputs = Conv2D(num_classes, (1, 1), activation=activation, name='output')(conv9)
+    
+    model = Model(inputs=inputs, outputs=outputs, name='Lightweight_UNet')
+    
+    return model
 
 # ---------------------------
 # 工具函数
@@ -116,37 +173,39 @@ def batch_predict(model, x_data, batch_size=4):
         gc.collect()
     return np.concatenate(predictions, axis=0)
 
-
-
-
-def get_eval_string_from_path(file_path):
+def get_eval_string_from_path(file_path, prefix="lightweight_unet"):
     """
     从模型路径中提取 epoch 数字并生成 eval 字符串
-    """
-    # 提取文件名部分（防止路径中其他位置也有数字干扰）
-    file_name = os.path.basename(file_path)
     
-    # 使用正则表达式匹配数字
-    # \d+ 表示匹配一个或多个数字
+    参数:
+        file_path: 模型权重文件路径
+        prefix: 评估结果文件夹前缀，默认为 "lightweight_unet"
+    """
+    file_name = os.path.basename(file_path)
     match = re.search(r'(\d+)', file_name)
     
     if match:
         epoch = match.group(1)
-        # 返回格式化后的字符串
-        return f"risultati_{epoch}_model_eval"
+        return f"{prefix}_{epoch}_model_eval"
     else:
-        return "Error: Could not find epoch number in path"
+        return f"{prefix}_eval"
 
 # ---------------------------
-# 主评估函数
+# 核心评估函数
 # ---------------------------
-def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
+def _evaluate_core(EVA_BASE_FOLDER, data_folder, model_weights_path, model, 
+                   model_type_name, num_visualize=10, eval_prefix="lightweight_unet"):
     """
-    评估训练好的分割模型
+    核心评估逻辑（避免代码重复）
     
     参数:
-        EVA_BASE_FOLDER: 数据文件夹路径（包含 .npy 文件）
-        num_visualize: 生成可视化图像的数量，默认 10
+        EVA_BASE_FOLDER: 评估结果保存文件夹路径
+        data_folder: 数据文件夹路径（包含 .npy 文件）
+        model_weights_path: 模型权重文件路径
+        model: 已构建的 Keras 模型
+        model_type_name: 模型类型名称（用于日志显示）
+        num_visualize: 生成可视化图像的数量
+        eval_prefix: 评估结果文件夹前缀
     """
     # ---------------------------
     # 初始化
@@ -154,13 +213,13 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     setup_gpu()
     
     logger.info("=" * 60)
-    logger.info("Starting Model Evaluation")
+    logger.info(f"Starting {model_type_name} Model Evaluation")
     logger.info("=" * 60)
-    logger.info(f"Data folder: {EVA_BASE_FOLDER}")
+    logger.info(f"Data folder: {data_folder}")
+    logger.info(f"Model weights path: {model_weights_path}")
     logger.info(f"Number of visualizations to generate: {num_visualize}")
     
-    path = EVA_BASE_FOLDER
-    RESULTS_DIR = os.path.join(path, get_eval_string_from_path(model_weights_path))
+    RESULTS_DIR = os.path.join(EVA_BASE_FOLDER, get_eval_string_from_path(model_weights_path, eval_prefix))
     PLOT_DIR = os.path.join(RESULTS_DIR, "plots")
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(PLOT_DIR, exist_ok=True)
@@ -207,33 +266,20 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     logger.info("✓ One-hot encodings created")
     
     # ---------------------------
-    # 构建模型
+    # 加载模型权重
     # ---------------------------
-    logger.info("-" * 60)
-    logger.info("Building model...")
-    logger.info("Backbone: vgg16")
-    logger.info("Input shape: (256, 256, 3)")
-    logger.info("Classes: 4")
-    logger.info("Activation: softmax")
-    logger.info("Encoder weights: imagenet")
-    
-    base_model = sm.Unet(backbone_name="vgg16", input_shape=(256, 256, 3), classes=4, activation="softmax", encoder_weights="imagenet")
-    inp = Input(shape=(None, None, x_train.shape[-1]))
-    l1 = Conv2D(3, (1, 1))(inp)
-    out = base_model(l1)
-    modelUnet = Model(inp, out, name=base_model.name)
-    modelUnet.compile(Adam(0.0001), sm.losses.DiceLoss() + sm.losses.CategoricalFocalLoss(),
-                      metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)])
-    logger.info("✓ Model built and compiled successfully")
-    
     logger.info("-" * 60)
     logger.info("Loading model weights...")
     if not os.path.exists(model_weights_path):
         logger.error(f"No model found in {model_weights_path}")
         return 
     
-    modelUnet.load_weights(model_weights_path)
+    model.load_weights(model_weights_path)
     logger.info(f"✓ Model weights loaded from {model_weights_path}")
+    
+    # 打印模型参数量
+    total_params = model.count_params()
+    logger.info(f"Total model parameters: {total_params:,}")
     
     # ---------------------------
     # 预测与评估
@@ -245,7 +291,7 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     logger.info(f"Number of test samples to evaluate: {num_eval}")
     logger.info(f"Predicting {num_eval} test samples with batch size 2...")
     
-    y_pred_test = batch_predict(modelUnet, x_test[:num_eval], batch_size=2)
+    y_pred_test = batch_predict(model, x_test[:num_eval], batch_size=2)
     logger.info(f"✓ Predictions completed, shape: {y_pred_test.shape}")
     
     logger.info("Calculating metrics for each sample...")
@@ -305,9 +351,13 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     logger.info("Generating summary statistics...")
     
     summary_per_class = {
+        "model_type": model_type_name,
+        "total_parameters": int(total_params),
         "num_test_samples": num_eval,
         "dice_mean": {CLASS_NAMES[i]: float(all_dice[:, i].mean()) for i in range(3)},
+        "dice_std": {CLASS_NAMES[i]: float(all_dice[:, i].std()) for i in range(3)},
         "hd_mean": {CLASS_NAMES[i]: float(all_hd[:, i].mean()) for i in range(3)},
+        "hd_std": {CLASS_NAMES[i]: float(all_hd[:, i].std()) for i in range(3)},
         "metrics_mean": {},
         "metrics_std": {}
     }
@@ -324,10 +374,12 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     
     # 打印汇总统计信息
     logger.info("Summary Statistics:")
+    logger.info(f"  Model: {model_type_name}")
+    logger.info(f"  Total Parameters: {total_params:,}")
     for class_name in CLASS_NAMES[:-1]:
         logger.info(f"  {class_name}:")
-        logger.info(f"    Mean Dice: {summary_per_class['dice_mean'][class_name]:.4f}")
-        logger.info(f"    Mean Hausdorff Distance: {summary_per_class['hd_mean'][class_name]:.4f}")
+        logger.info(f"    Mean Dice: {summary_per_class['dice_mean'][class_name]:.4f} ± {summary_per_class['dice_std'][class_name]:.4f}")
+        logger.info(f"    Mean Hausdorff Distance: {summary_per_class['hd_mean'][class_name]:.4f} ± {summary_per_class['hd_std'][class_name]:.4f}")
         logger.info(f"    Mean F1 Score: {summary_per_class['metrics_mean'][class_name]['f1_score']:.4f}")
         logger.info(f"    Mean IoU: {summary_per_class['metrics_mean'][class_name]['iou']:.4f}")
     
@@ -380,3 +432,144 @@ def evaluate(EVA_BASE_FOLDER,data_folder ,model_weights_path, num_visualize=10):
     logger.info(f"  - Summary JSON: {json_path_per_class}")
     logger.info(f"  - Visualizations: {PLOT_DIR} ({min(num_eval, num_visualize)} images)")
     logger.info("=" * 60)
+
+# ---------------------------
+# 外部接口函数
+# ---------------------------
+def evaluate_unetlight(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10):
+    """
+    评估训练好的轻量级 U-Net 分割模型
+    
+    参数:
+        EVA_BASE_FOLDER: 评估结果保存文件夹路径
+        data_folder: 数据文件夹路径（包含 .npy 文件）
+        model_weights_path: 模型权重文件路径
+        num_visualize: 生成可视化图像的数量，默认 10
+    """
+    logger.info("Building Lightweight U-Net model...")
+    logger.info("Model type: Lightweight U-Net (No Pretrained Backbone)")
+    logger.info("Input shape: (256, 256, 1)")
+    logger.info("Classes: 4")
+    logger.info("Activation: softmax")
+    
+    modelUnet = build_lightweight_unet(
+        input_shape=(256, 256, 1),
+        num_classes=4,
+        activation='softmax'
+    )
+    
+    # 编译模型（使用与训练时相同的配置）
+    modelUnet.compile(
+        Adam(0.0001), 
+        sm.losses.DiceLoss(class_weights=np.array([1, 1, 1, 0.5])) + sm.losses.CategoricalFocalLoss(),
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+    
+    logger.info("✓ Model built and compiled successfully")
+    
+    _evaluate_core(
+        EVA_BASE_FOLDER=EVA_BASE_FOLDER,
+        data_folder=data_folder,
+        model_weights_path=model_weights_path,
+        model=modelUnet,
+        model_type_name="Lightweight U-Net (No Pretrained Backbone)",
+        num_visualize=num_visualize,
+        eval_prefix="lightweight_unet"
+    )
+
+def evaluate(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10):
+    """
+    评估训练好的 VGG16-UNet 分割模型
+    
+    参数:
+        EVA_BASE_FOLDER: 评估结果保存文件夹路径
+        data_folder: 数据文件夹路径（包含 .npy 文件）
+        model_weights_path: 模型权重文件路径
+        num_visualize: 生成可视化图像的数量，默认 10
+    """
+    logger.info("Building VGG16-UNet model...")
+    logger.info("Backbone: vgg16")
+    logger.info("Input shape: (256, 256, 3)")
+    logger.info("Classes: 4")
+    logger.info("Activation: softmax")
+    logger.info("Encoder weights: imagenet")
+    
+    # 加载临时数据以获取输入形状
+    x_train_path = os.path.join(data_folder, "x_2d_train.npy")
+    x_train = np.load(x_train_path)
+    
+    base_model = sm.Unet(
+        backbone_name="vgg16", 
+        input_shape=(256, 256, 3), 
+        classes=4, 
+        activation="softmax", 
+        encoder_weights="imagenet"
+    )
+    inp = Input(shape=(None, None, x_train.shape[-1]))
+    l1 = Conv2D(3, (1, 1))(inp)
+    out = base_model(l1)
+    modelUnet = Model(inp, out, name=base_model.name)
+    modelUnet.compile(
+        Adam(0.0001), 
+        sm.losses.DiceLoss() + sm.losses.CategoricalFocalLoss(),
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+    logger.info("✓ Model built and compiled successfully")
+    
+    _evaluate_core(
+        EVA_BASE_FOLDER=EVA_BASE_FOLDER,
+        data_folder=data_folder,
+        model_weights_path=model_weights_path,
+        model=modelUnet,
+        model_type_name="VGG16-UNet (ImageNet Pretrained)",
+        num_visualize=num_visualize,
+        eval_prefix="risultati"
+    )
+
+def evaluate_unetpp(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10):
+    """评估 U-Net++ 模型"""
+    logger.info("Building Custom U-Net++ model for evaluation...")
+    
+    # 必须使用与训练时相同的构建函数
+    model = build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=4)
+    
+    model.compile(
+        Adam(0.0001), 
+        sm.losses.DiceLoss() + sm.losses.CategoricalFocalLoss(),
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+    
+    _evaluate_core(
+        EVA_BASE_FOLDER=EVA_BASE_FOLDER,
+        data_folder=data_folder,
+        model_weights_path=model_weights_path,
+        model=model,
+        model_type_name="U-Net++ (Custom Nested)",
+        num_visualize=num_visualize,
+        eval_prefix="unetpp"
+    )
+
+
+def evaluate_attention_unet(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10):
+    """评估 Attention U-Net 模型"""
+    logger.info("Building Custom Attention U-Net model for evaluation...")
+    
+    # 必须使用自定义的构建函数
+    from tensorflow.keras.layers import multiply 
+    model = build_attention_unet_custom(input_shape=(256, 256, 1), num_classes=4)
+    
+    model.compile(
+        Adam(0.0001), 
+        sm.losses.DiceLoss() + sm.losses.CategoricalFocalLoss(),
+        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+    )
+    
+    _evaluate_core(
+        EVA_BASE_FOLDER=EVA_BASE_FOLDER,
+        data_folder=data_folder,
+        model_weights_path=model_weights_path,
+        model=model,
+        model_type_name="Attention U-Net (Custom)",
+        num_visualize=num_visualize,
+        eval_prefix="attention_unet"
+    )
