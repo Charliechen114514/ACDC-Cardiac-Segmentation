@@ -19,7 +19,7 @@ from datetime import datetime
 # ------------- Settings -------------
 DATA_FOLDER = "train_datas/training/"
 BASE_RESULT_DIR_RAW = "baseline/result"
-EPOCHES = 60
+EPOCHES = 150
 # ------------- Settings End -------------
 
 BASE_RESULT_DIR = Path(BASE_RESULT_DIR_RAW)

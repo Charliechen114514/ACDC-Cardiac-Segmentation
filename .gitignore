@@ -5,6 +5,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+worktable/
+my_sheet/
+
 # C extensions
 *.so
 *.pyd

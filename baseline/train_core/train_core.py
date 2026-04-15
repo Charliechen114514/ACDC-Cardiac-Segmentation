@@ -6,9 +6,10 @@ from tensorflow.keras.layers import Input, Conv2D
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import (
-    Input, Conv2D, MaxPooling2D, UpSampling2D, 
+    Input, Conv2D, MaxPooling2D, UpSampling2D,
     concatenate, BatchNormalization, Activation, Dropout
 )
+from tensorflow.keras.callbacks import EarlyStopping
 from baseline.base_component import *
 from loguru import logger
 
@@ -107,6 +108,20 @@ def build_model(num_classes, backbone, encoder_weights, activation, input_shape)
     
     logger.info(f"Model built successfully: {modelUnet.name}")
     return modelUnet
+
+# -------------------------------
+# 回调函数工厂
+# -------------------------------
+def _make_callbacks():
+    """创建统一的训练回调：仅 EarlyStopping"""
+    return [
+        EarlyStopping(
+            monitor='val_loss',
+            patience=20,
+            restore_best_weights=True,
+            verbose=1
+        ),
+    ]
 
 # -------------------------------
 # 主训练函数
@@ -222,12 +237,14 @@ def train_model(save_data_folder, SAVE_BASE_PATH,EPOCHS=50, BATCH_SIZE=4):
     logger.info("Starting training...")
     logger.info("=" * 60)
     
+    callbacks = _make_callbacks()
+    logger.info("Callbacks: EarlyStopping(patience=20, restore_best_weights=True)")
+
     history = modelUnet.fit(
         train_ds,
         validation_data=val_ds,
         epochs=EPOCHS,
-        # 若需要更稳健的训练监控，可以添加 callbacks（例如 ModelCheckpoint），
-        # 但原始逻辑只在训练结束时保存最终模型，所以这里保持一致。
+        callbacks=callbacks,
     )
     
     logger.info("=" * 60)
@@ -488,11 +505,15 @@ def train_model_light_uent(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SI
     logger.info("=" * 60)
     logger.info("Starting training...")
     logger.info("=" * 60)
-    
+
+    callbacks = _make_callbacks()
+    logger.info("Callbacks: EarlyStopping(patience=20, restore_best_weights=True)")
+
     history = modelUnet.fit(
         train_ds,
         validation_data=val_ds,
         epochs=EPOCHS,
+        callbacks=callbacks,
     )
     
     logger.info("=" * 60)
@@ -553,7 +574,8 @@ def train_model_unetpp(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SIZE=4
                           os.path.join(save_data_folder, "y_2d_val.npy"), BATCH_SIZE, NUM_CLASSES)
 
     logger.info(f"Training U-Net++... Saving to: {MODEL_SAVE_NAME}")
-    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+    callbacks = _make_callbacks()
+    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
     model.save(MODEL_SAVE_NAME)
     return MODEL_SAVE_NAME
 
@@ -583,6 +605,7 @@ def train_model_attention_unet(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATC
                           os.path.join(save_data_folder, "y_2d_val.npy"), BATCH_SIZE, NUM_CLASSES)
 
     logger.info(f"Starting Attention U-Net training. Saving to: {MODEL_SAVE_NAME}")
-    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+    callbacks = _make_callbacks()
+    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
     model.save(MODEL_SAVE_NAME)
     return MODEL_SAVE_NAME
