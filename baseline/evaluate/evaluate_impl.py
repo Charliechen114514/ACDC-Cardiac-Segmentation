@@ -117,25 +117,38 @@ def back_to_1_channel_mask(img, alpha=0.5):
     return yy
 
 def calculate_dice(y_true, y_pred):
-    """计算 Dice 系数"""
+    """
+    计算 Dice 系数。
+    仅在 GT 中存在该类时计算 Dice，否则返回 NaN（不参与均值统计）。
+    这样可以避免空类（GT 和 Pred 均为空）返回 1.0 虚高分数的问题。
+    """
     dice_scores = []
     for i in range(1, 4):
         gt = (y_true == i).astype(np.uint8)
         pred = (y_pred == i).astype(np.uint8)
         intersection = np.sum(gt * pred)
         sum_val = np.sum(gt) + np.sum(pred)
-        dice_scores.append((2. * intersection / sum_val) if sum_val > 0 else 1.0)
+        if np.sum(gt) == 0:
+            # GT 中不存在该类，标记为 NaN，聚合时通过 nanmean 排除
+            dice_scores.append(np.nan)
+        else:
+            dice_scores.append((2. * intersection / sum_val) if sum_val > 0 else 0.0)
     return dice_scores
 
 def calculate_hausdorff(y_true, y_pred):
-    """计算 Hausdorff 距离"""
+    """
+    计算 Hausdorff 距离。
+    仅在 GT 中存在该类时计算 HD，否则返回 NaN。
+    """
     hd_scores = []
     for i in range(1, 4):
         gt_points = np.argwhere(y_true == i)
         pred_points = np.argwhere(y_pred == i)
-        if len(gt_points) == 0 and len(pred_points) == 0:
-            hd_scores.append(0.0)
-        elif len(gt_points) == 0 or len(pred_points) == 0:
+        if len(gt_points) == 0:
+            # GT 中不存在该类，标记为 NaN
+            hd_scores.append(np.nan)
+        elif len(pred_points) == 0:
+            # GT 存在但 Pred 完全缺失，给予最大惩罚
             hd_scores.append(100.0)
         else:
             d1 = directed_hausdorff(gt_points, pred_points)[0]
@@ -144,11 +157,18 @@ def calculate_hausdorff(y_true, y_pred):
     return hd_scores
 
 def calculate_additional_metrics(y_true, y_pred):
-    """计算额外的评估指标"""
+    """
+    计算额外的评估指标。
+    当 GT 中不存在该类时，所有指标返回 NaN。
+    """
     metrics = []
     for i in range(1, 4):
         gt = (y_true == i).astype(np.uint8)
         pred = (y_pred == i).astype(np.uint8)
+        if np.sum(gt) == 0:
+            # GT 中不存在该类，标记为 NaN
+            metrics.append([np.nan, np.nan, np.nan, np.nan, np.nan])
+            continue
         TP = np.sum(gt * pred)
         FP = np.sum((1 - gt) * pred)
         FN = np.sum(gt * (1 - pred))
@@ -287,10 +307,10 @@ def _evaluate_core(EVA_BASE_FOLDER, data_folder, model_weights_path, model,
     logger.info("-" * 60)
     logger.info("Starting prediction and evaluation...")
     
-    num_eval = min(len(x_test), 50)
-    logger.info(f"Number of test samples to evaluate: {num_eval}")
+    num_eval = len(x_test)
+    logger.info(f"Number of test samples to evaluate: {num_eval} (full test set)")
     logger.info(f"Predicting {num_eval} test samples with batch size 2...")
-    
+
     y_pred_test = batch_predict(model, x_test[:num_eval], batch_size=2)
     logger.info(f"✓ Predictions completed, shape: {y_pred_test.shape}")
     
@@ -354,10 +374,12 @@ def _evaluate_core(EVA_BASE_FOLDER, data_folder, model_weights_path, model,
         "model_type": model_type_name,
         "total_parameters": int(total_params),
         "num_test_samples": num_eval,
-        "dice_mean": {CLASS_NAMES[i]: float(all_dice[:, i].mean()) for i in range(3)},
-        "dice_std": {CLASS_NAMES[i]: float(all_dice[:, i].std()) for i in range(3)},
-        "hd_mean": {CLASS_NAMES[i]: float(all_hd[:, i].mean()) for i in range(3)},
-        "hd_std": {CLASS_NAMES[i]: float(all_hd[:, i].std()) for i in range(3)},
+        "dice_mean": {CLASS_NAMES[i]: float(np.nanmean(all_dice[:, i])) for i in range(3)},
+        "dice_std": {CLASS_NAMES[i]: float(np.nanstd(all_dice[:, i])) for i in range(3)},
+        "dice_valid_count": {CLASS_NAMES[i]: int(np.sum(~np.isnan(all_dice[:, i]))) for i in range(3)},
+        "hd_mean": {CLASS_NAMES[i]: float(np.nanmean(all_hd[:, i])) for i in range(3)},
+        "hd_std": {CLASS_NAMES[i]: float(np.nanstd(all_hd[:, i])) for i in range(3)},
+        "hd_valid_count": {CLASS_NAMES[i]: int(np.sum(~np.isnan(all_hd[:, i]))) for i in range(3)},
         "metrics_mean": {},
         "metrics_std": {}
     }
@@ -366,10 +388,10 @@ def _evaluate_core(EVA_BASE_FOLDER, data_folder, model_weights_path, model,
     
     for c in range(3):
         summary_per_class["metrics_mean"][CLASS_NAMES[c]] = {
-            metric_names[m]: float(all_metrics[:, c, m].mean()) for m in range(5)
+            metric_names[m]: float(np.nanmean(all_metrics[:, c, m])) for m in range(5)
         }
         summary_per_class["metrics_std"][CLASS_NAMES[c]] = {
-            metric_names[m]: float(all_metrics[:, c, m].std()) for m in range(5)
+            metric_names[m]: float(np.nanstd(all_metrics[:, c, m])) for m in range(5)
         }
     
     # 打印汇总统计信息
@@ -527,11 +549,13 @@ def evaluate(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10)
     )
 
 def evaluate_unetpp(EVA_BASE_FOLDER, data_folder, model_weights_path, num_visualize=10):
-    """评估 U-Net++ 模型"""
-    logger.info("Building Custom U-Net++ model for evaluation...")
-    
-    # 必须使用与训练时相同的构建函数
-    model = build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=4)
+    """评估 U-Net++ 模型（推理模式，仅最终输出）"""
+    logger.info("Building Custom U-Net++ model for evaluation (deep_supervision=False)...")
+
+    # 推理模式：仅最终输出
+    model = build_unet_plus_plus_custom(
+        input_shape=(256, 256, 1), num_classes=4, deep_supervision=False
+    )
     
     model.compile(
         Adam(0.0001), 

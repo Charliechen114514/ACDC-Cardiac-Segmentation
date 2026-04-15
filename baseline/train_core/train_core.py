@@ -548,35 +548,123 @@ def train_model_light_uent(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SI
 def train_model_unetpp(save_data_folder, SAVE_BASE_PATH, EPOCHS=50, BATCH_SIZE=4):
     setup_gpu()
     NUM_CLASSES = 4
-    
+
     # 路径准备
     MODEL_SAVE_DIR = os.path.join(SAVE_BASE_PATH, f"unetpp_{EPOCHS}_model")
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     MODEL_SAVE_NAME = os.path.join(MODEL_SAVE_DIR, f"modelUnetPP_{EPOCHS}epochs.keras")
 
-    # 构建自定义 U-Net++ 模型
-    logger.info("Building Custom U-Net++ (Nested Skip Connections)")
-    model = build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=NUM_CLASSES)
+    # 构建带深度监督的 U-Net++ 模型
+    logger.info("Building Custom U-Net++ with Deep Supervision (Nested Skip Connections)")
+    model = build_unet_plus_plus_custom(
+        input_shape=(256, 256, 1), num_classes=NUM_CLASSES, deep_supervision=True
+    )
 
-    # 编译 (保持与 Baseline 一致的损失函数)
+    # 编译：每个输出头使用相同的损失函数
+    # 深度监督中，浅层输出权重递减：output_1 < output_2 < output_3 < output_4
     dice_loss = sm.losses.DiceLoss(class_weights=np.array([1, 1, 1, 0.5]))
     focal_loss = sm.losses.CategoricalFocalLoss()
+    combined_loss = dice_loss + focal_loss
+
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
-        loss=dice_loss + focal_loss,
-        metrics=[sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+        loss={
+            'output_1': combined_loss,
+            'output_2': combined_loss,
+            'output_3': combined_loss,
+            'output_4': combined_loss,
+        },
+        loss_weights={
+            'output_1': 0.5,   # 浅层辅助输出，权重较小
+            'output_2': 0.75,
+            'output_3': 0.75,
+            'output_4': 1.0,   # 最终输出，权重最大
+        },
+        metrics={
+            'output_4': [sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
+        }
     )
 
     # 数据集加载 (复用之前的逻辑)
-    train_ds = make_dataset(os.path.join(save_data_folder, "x_2d_train.npy"), 
-                            os.path.join(save_data_folder, "y_2d_train.npy"), BATCH_SIZE, NUM_CLASSES)
-    val_ds = make_dataset(os.path.join(save_data_folder, "x_2d_val.npy"), 
-                          os.path.join(save_data_folder, "y_2d_val.npy"), BATCH_SIZE, NUM_CLASSES)
+    # 多输出模型需要将标签复制为 4 份
+    def multi_output_generator(x_path, y_path, num_classes):
+        """为多输出模型生成 (x, {output_1: y, output_2: y, ...}) 格式的数据"""
+        x_mmap = np.load(x_path, mmap_mode='r')
+        y_mmap = np.load(y_path, mmap_mode='r')
+        n_samples = x_mmap.shape[0]
+        while True:
+            indices = np.random.permutation(n_samples)
+            for i in indices:
+                x_slice = x_mmap[i, :, :, 0].astype(np.float32)
+                maxv = np.max(x_slice)
+                if maxv > 0:
+                    x_slice /= maxv
+                x_slice = np.expand_dims(x_slice, axis=-1)
 
-    logger.info(f"Training U-Net++... Saving to: {MODEL_SAVE_NAME}")
+                y_slice = y_mmap[i, :, :, 0].astype(np.int32)
+                y_oh = np.zeros((256, 256, num_classes), dtype=np.float32)
+                y_oh[:, :, 0] = (y_slice == 1).astype(np.float32)
+                y_oh[:, :, 1] = (y_slice == 2).astype(np.float32)
+                y_oh[:, :, 2] = (y_slice == 3).astype(np.float32)
+                y_oh[:, :, 3] = (y_slice == 0).astype(np.float32)
+
+                yield x_slice, {
+                    'output_1': y_oh,
+                    'output_2': y_oh,
+                    'output_3': y_oh,
+                    'output_4': y_oh,
+                }
+
+    x_train_path = os.path.join(save_data_folder, "x_2d_train.npy")
+    y_train_path = os.path.join(save_data_folder, "y_2d_train.npy")
+    x_val_path = os.path.join(save_data_folder, "x_2d_val.npy")
+    y_val_path = os.path.join(save_data_folder, "y_2d_val.npy")
+
+    x_train_mmap = np.load(x_train_path, mmap_mode='r')
+    n_train = x_train_mmap.shape[0]
+    x_val_mmap = np.load(x_val_path, mmap_mode='r')
+    n_val = x_val_mmap.shape[0]
+
+    output_types = (tf.float32, {
+        'output_1': tf.float32, 'output_2': tf.float32,
+        'output_3': tf.float32, 'output_4': tf.float32,
+    })
+    output_shapes = ((256, 256, 1), {
+        'output_1': (256, 256, NUM_CLASSES), 'output_2': (256, 256, NUM_CLASSES),
+        'output_3': (256, 256, NUM_CLASSES), 'output_4': (256, 256, NUM_CLASSES),
+    })
+
+    train_ds = tf.data.Dataset.from_generator(
+        lambda: multi_output_generator(x_train_path, y_train_path, NUM_CLASSES),
+        output_types=output_types, output_shapes=output_shapes
+    ).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+
+    val_ds = tf.data.Dataset.from_generator(
+        lambda: multi_output_generator(x_val_path, y_val_path, NUM_CLASSES),
+        output_types=output_types, output_shapes=output_shapes
+    ).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+
+    logger.info(f"Training U-Net++ with Deep Supervision... Saving to: {MODEL_SAVE_NAME}")
     callbacks = _make_callbacks()
-    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
-    model.save(MODEL_SAVE_NAME)
+    model.fit(train_ds, validation_data=val_ds,
+              steps_per_epoch=n_train // BATCH_SIZE,
+              validation_steps=n_val // BATCH_SIZE,
+              epochs=EPOCHS, callbacks=callbacks)
+
+    # 保存推理用模型（仅最终输出）
+    logger.info("Saving inference model (deep_supervision=False)...")
+    inference_model = build_unet_plus_plus_custom(
+        input_shape=(256, 256, 1), num_classes=NUM_CLASSES, deep_supervision=False
+    )
+    # 将训练好的权重迁移到推理模型
+    for layer in inference_model.layers:
+        try:
+            trained_layer = model.get_layer(layer.name)
+            layer.set_weights(trained_layer.get_weights())
+        except (ValueError, AttributeError):
+            pass
+    inference_model.save(MODEL_SAVE_NAME)
+    logger.info(f"Inference model saved to: {MODEL_SAVE_NAME}")
     return MODEL_SAVE_NAME
 
 # -------------------------------

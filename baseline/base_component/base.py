@@ -31,11 +31,16 @@ def conv_block(inputs, filters, dropout_rate=0.1):
     return x
 
 # -------------------------------
-# U-Net++
+# U-Net++ (带深度监督)
 # -------------------------------
-def build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=4):
+def build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=4, deep_supervision=True):
     """
-    手动实现 U-Net++ 架构 (针对 256x256 输入)
+    手动实现 U-Net++ 架构，支持深度监督 (Deep Supervision)。
+    参考: Zhou et al., "UNet++: A Nested U-Net Architecture for Medical Image Segmentation", 2018
+
+    深度监督模式下，模型在 X0_1, X0_2, X0_3, X0_4 各级产生辅助输出：
+    - 训练时：所有辅助输出参与损失计算，帮助梯度回传
+    - 推理时：仅使用最终输出 X0_4（最精细的分割结果）
     """
     def standard_unit(input_tensor, stage, col, filters):
         x = Conv2D(filters, (3, 3), padding='same', name=f'conv{stage}_{col}_1')(input_tensor)
@@ -71,9 +76,18 @@ def build_unet_plus_plus_custom(input_shape=(256, 256, 1), num_classes=4):
 
     X0_4 = standard_unit(concatenate([X0_0, X0_1, X0_2, X0_3, UpSampling2D((2, 2))(X1_3)]), 0, 4, nb_filter[0])
 
-    # 输出层
-    output = Conv2D(num_classes, (1, 1), activation='softmax', name='output')(X0_4)
-    model = Model(inputs=img_input, outputs=output, name='UnetPlusPlus')
+    # 深度监督：各级输出头
+    output_1 = Conv2D(num_classes, (1, 1), activation='softmax', name='output_1')(X0_1)
+    output_2 = Conv2D(num_classes, (1, 1), activation='softmax', name='output_2')(X0_2)
+    output_3 = Conv2D(num_classes, (1, 1), activation='softmax', name='output_3')(X0_3)
+    output_4 = Conv2D(num_classes, (1, 1), activation='softmax', name='output_4')(X0_4)
+
+    if deep_supervision:
+        # 训练模式：返回所有辅助输出，用于多损失监督
+        model = Model(inputs=img_input, outputs=[output_1, output_2, output_3, output_4], name='UnetPlusPlus')
+    else:
+        # 推理模式：仅返回最终输出
+        model = Model(inputs=img_input, outputs=output_4, name='UnetPlusPlus')
     return model
 
 
